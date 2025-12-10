@@ -266,6 +266,8 @@ extern "C" unsigned getJSCBytecodeCacheVersion()
 extern "C" void Bun__REPRL__registerFuzzilliFunctions(Zig::GlobalObject*);
 #endif
 
+extern "C" int32_t bun_is_exiting();
+
 extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length), bool evalMode)
 {
     static std::once_flag jsc_init_flag;
@@ -273,7 +275,14 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
     std::call_once(jsc_init_flag, [evalMode, envp, envc, onCrash]() {
         JSC::Config::enableRestrictedOptions();
 
-        std::set_terminate([]() { Zig__GlobalObject__onCrash(); });
+        std::set_terminate([]() {
+            // if we're already exiting, a native module threw an exception
+            // during cleanup (e.g. in a destructor). don't crash - just exit.
+            if (bun_is_exiting()) {
+                _Exit(0);
+            }
+            Zig__GlobalObject__onCrash();
+        });
         WTF::initializeMainThread();
 
 #if ASAN_ENABLED && OS(LINUX)
