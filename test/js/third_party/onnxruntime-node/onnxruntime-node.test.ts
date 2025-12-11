@@ -1,202 +1,10 @@
-/**
- * Tests for onnxruntime-node compatibility with Bun.
- *
- * These tests verify:
- * - Tensor creation and disposal (memory management)
- * - InferenceSession lifecycle
- * - Concurrent session usage
- * - Memory leak detection under load
- *
- * Common issues found in production (VAD service):
- * - Tensor.dispose() not properly freeing native memory
- * - Session release/create cycles leaking memory
- * - Race conditions in concurrent inference
- * - State tensor updates causing memory growth
- */
-
 import { describe, test, expect, beforeAll } from "bun:test";
 import * as ort from "onnxruntime-node";
 import { join } from "path";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 
-// directory to store test models
 const MODELS_DIR = join(import.meta.dir, "models");
-const SIMPLE_MODEL_PATH = join(MODELS_DIR, "simple_add.onnx");
 
-/**
- * Creates a minimal ONNX model that performs: output = input + 1
- * This is created using raw protobuf bytes for a valid ONNX model.
- */
-// function createSimpleAddModel(): Uint8Array {
-//   // this is a minimal valid ONNX model (ir_version=8, opset=13)
-//   // graph: output = Add(input, ones)
-//   // input: float32[1, 4]
-//   // output: float32[1, 4]
-//   return new Uint8Array([
-//     // ONNX file header
-//     0x08,
-//     0x08, // ir_version = 8
-//     0x12,
-//     0x08, // producer_name (8 bytes)
-//     0x62,
-//     0x75,
-//     0x6e,
-//     0x2d,
-//     0x74,
-//     0x65,
-//     0x73,
-//     0x74,
-//     0x1a,
-//     0x85,
-//     0x01, // graph field (133 bytes)
-//
-//     // graph.node[0]: Add
-//     0x0a,
-//     0x1a, // node (26 bytes)
-//     0x0a,
-//     0x05,
-//     0x69,
-//     0x6e,
-//     0x70,
-//     0x75,
-//     0x74, // input: "input"
-//     0x0a,
-//     0x04,
-//     0x6f,
-//     0x6e,
-//     0x65,
-//     0x73, // input: "ones"
-//     0x12,
-//     0x06,
-//     0x6f,
-//     0x75,
-//     0x74,
-//     0x70,
-//     0x75,
-//     0x74, // output: "output"
-//     0x22,
-//     0x03,
-//     0x41,
-//     0x64,
-//     0x64, // op_type: "Add"
-//
-//     // graph.name
-//     0x12,
-//     0x0a, // name (10 bytes)
-//     0x74,
-//     0x65,
-//     0x73,
-//     0x74,
-//     0x5f,
-//     0x67,
-//     0x72,
-//     0x61,
-//     0x70,
-//     0x68, // "test_graph"
-//
-//     // graph.initializer[0]: ones (constant tensor)
-//     0x22,
-//     0x24, // initializer (36 bytes)
-//     0x0a,
-//     0x04,
-//     0x6f,
-//     0x6e,
-//     0x65,
-//     0x73, // name: "ones"
-//     0x10,
-//     0x01, // data_type: FLOAT (1)
-//     0x1a,
-//     0x02,
-//     0x01,
-//     0x04, // dims: [1, 4]
-//     0x2a,
-//     0x10, // float_data (16 bytes = 4 floats)
-//     0x00,
-//     0x00,
-//     0x80,
-//     0x3f, // 1.0f
-//     0x00,
-//     0x00,
-//     0x80,
-//     0x3f, // 1.0f
-//     0x00,
-//     0x00,
-//     0x80,
-//     0x3f, // 1.0f
-//     0x00,
-//     0x00,
-//     0x80,
-//     0x3f, // 1.0f
-//
-//     // graph.input[0]
-//     0x32,
-//     0x19, // input (25 bytes)
-//     0x0a,
-//     0x17, // ValueInfoProto
-//     0x0a,
-//     0x05,
-//     0x69,
-//     0x6e,
-//     0x70,
-//     0x75,
-//     0x74, // name: "input"
-//     0x12,
-//     0x0e, // type
-//     0x0a,
-//     0x0c, // tensor_type
-//     0x08,
-//     0x01, // elem_type: FLOAT
-//     0x12,
-//     0x06, // shape
-//     0x0a,
-//     0x02,
-//     0x08,
-//     0x01, // dim: 1
-//     0x0a,
-//     0x02,
-//     0x08,
-//     0x04, // dim: 4
-//
-//     // graph.output[0]
-//     0x3a,
-//     0x1a, // output (26 bytes)
-//     0x0a,
-//     0x18, // ValueInfoProto
-//     0x0a,
-//     0x06,
-//     0x6f,
-//     0x75,
-//     0x74,
-//     0x70,
-//     0x75,
-//     0x74, // name: "output"
-//     0x12,
-//     0x0e, // type
-//     0x0a,
-//     0x0c, // tensor_type
-//     0x08,
-//     0x01, // elem_type: FLOAT
-//     0x12,
-//     0x06, // shape
-//     0x0a,
-//     0x02,
-//     0x08,
-//     0x01, // dim: 1
-//     0x0a,
-//     0x02,
-//     0x08,
-//     0x04, // dim: 4
-//
-//     // opset_import
-//     0x40,
-//     0x0d, // opset version 13
-//   ]);
-// }
-//
-/**
- * Downloads a real, small ONNX model for testing.
- * Using the MNIST model which is tiny (~26KB).
- */
 async function downloadTestModel(): Promise<string> {
   const modelUrl = "https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx";
   const modelPath = join(MODELS_DIR, "mnist.onnx");
@@ -221,10 +29,6 @@ async function downloadTestModel(): Promise<string> {
 
   return modelPath;
 }
-
-// ============================================================================
-// TENSOR TESTS
-// ============================================================================
 
 describe("onnxruntime-node Tensor", () => {
   test("can create float32 tensor", () => {
@@ -306,10 +110,6 @@ describe("onnxruntime-node Tensor", () => {
   });
 });
 
-// ============================================================================
-// INFERENCE SESSION TESTS
-// ============================================================================
-
 describe("onnxruntime-node InferenceSession", () => {
   let modelPath: string;
 
@@ -330,8 +130,7 @@ describe("onnxruntime-node InferenceSession", () => {
     await session.release();
   });
 
-  test("can create session with options (VAD-style)", async () => {
-    // these are the options used in VAD's BaseOnnxModel
+  test("can create session with options", async () => {
     const session = await ort.InferenceSession.create(modelPath, {
       graphOptimizationLevel: "all",
       enableCpuMemArena: false,
@@ -429,20 +228,15 @@ describe("onnxruntime-node InferenceSession", () => {
   });
 });
 
-// ============================================================================
-// VAD-STYLE PATTERNS
-// ============================================================================
-
-describe("onnxruntime-node VAD-style patterns", () => {
+describe("onnxruntime-node patterns", () => {
   let modelPath: string;
 
   beforeAll(async () => {
     modelPath = await downloadTestModel();
   });
 
-  test("state tensor update pattern (like Silero VAD)", async () => {
-    // simulates the VAD pattern where state tensor is updated each frame
-    // this is the exact pattern from silero.ts that can cause memory issues
+  test("state tensor update pattern", async () => {
+    // simulates a pattern where state tensor is updated each frame
     const batchSize = 1;
     const stateSize = 128;
 
@@ -458,8 +252,7 @@ describe("onnxruntime-node VAD-style patterns", () => {
         stateSize,
       ]);
 
-      // CRITICAL: dispose old state BEFORE replacing reference
-      // this is the pattern from silero.ts lines 140-145
+      // dispose old state before replacing reference
       const oldState = state;
       state = newState;
       oldState.dispose();
@@ -471,7 +264,7 @@ describe("onnxruntime-node VAD-style patterns", () => {
     expect(true).toBe(true);
   });
 
-  test("full inference cycle with tensor lifecycle (VAD pattern)", async () => {
+  test("full inference cycle with tensor lifecycle", async () => {
     const session = await ort.InferenceSession.create(modelPath, {
       graphOptimizationLevel: "all",
       enableCpuMemArena: false,
@@ -483,19 +276,14 @@ describe("onnxruntime-node VAD-style patterns", () => {
     const iterations = 50;
 
     for (let i = 0; i < iterations; i++) {
-      // create input tensor (like silero.ts line 112)
       const inputTensor = new ort.Tensor("float32", new Float32Array(1 * 1 * 28 * 28), [1, 1, 28, 28]);
-
-      // create sample rate tensor (like silero.ts line 113)
       const srTensor = new ort.Tensor("int64", BigInt64Array.from([16000n]), [1]);
 
       const feeds: Record<string, ort.Tensor> = {};
       feeds[inputName] = inputTensor;
 
-      // run inference (like silero.ts line 116)
       const results = await session.run(feeds);
 
-      // dispose in finally block pattern (silero.ts lines 166-205)
       inputTensor.dispose();
       srTensor.dispose();
       for (const key of Object.keys(results)) {
@@ -507,7 +295,7 @@ describe("onnxruntime-node VAD-style patterns", () => {
     expect(true).toBe(true);
   });
 
-  test("concurrent inference streams (multiple VAD clients)", async () => {
+  test("concurrent inference streams", async () => {
     const session = await ort.InferenceSession.create(modelPath, {
       graphOptimizationLevel: "all",
       enableCpuMemArena: false,
@@ -532,13 +320,13 @@ describe("onnxruntime-node VAD-style patterns", () => {
     };
 
     const runStream = async (streamId: number) => {
-      // each stream has its own state tensor (like RealtimeVAD.silero)
+      // each stream has its own state tensor
       let state = new ort.Tensor("float32", new Float32Array(256), [2, 1, 128]);
 
       for (let frame = 0; frame < framesPerStream; frame++) {
         const inputTensor = new ort.Tensor("float32", new Float32Array(1 * 1 * 28 * 28), [1, 1, 28, 28]);
 
-        // acquire semaphore before session.run (like silero.ts line 105)
+        // acquire semaphore before session.run
         await acquire();
 
         try {
@@ -558,7 +346,7 @@ describe("onnxruntime-node VAD-style patterns", () => {
             results[key]!.dispose();
           }
         } finally {
-          // release semaphore AFTER tensor cleanup (silero.ts line 203)
+          // release semaphore AFTER tensor cleanup
           release();
         }
 
@@ -576,7 +364,6 @@ describe("onnxruntime-node VAD-style patterns", () => {
   });
 
   test("session singleton pattern with re-initialization", async () => {
-    // simulates BaseOnnxModel.getSession() pattern
     let session: ort.InferenceSession | null = null;
     let released = false;
 
@@ -614,8 +401,7 @@ describe("onnxruntime-node VAD-style patterns", () => {
     await releaseSession();
   });
 
-  test("rapid destroy/recreate cycle (like WebSocket close/reopen)", async () => {
-    // simulates rapid client connections/disconnections
+  test("rapid destroy/recreate cycle", async () => {
     const cycles = 30;
 
     for (let i = 0; i < cycles; i++) {
@@ -637,10 +423,6 @@ describe("onnxruntime-node VAD-style patterns", () => {
     expect(true).toBe(true);
   });
 });
-
-// ============================================================================
-// MEMORY STRESS TESTS
-// ============================================================================
 
 describe("onnxruntime-node memory stress", () => {
   let modelPath: string;
@@ -677,7 +459,6 @@ describe("onnxruntime-node memory stress", () => {
   });
 
   test("large tensor allocation", () => {
-    // test with larger tensors (closer to real audio buffers)
     const iterations = 50;
 
     for (let i = 0; i < iterations; i++) {
@@ -702,10 +483,6 @@ describe("onnxruntime-node memory stress", () => {
     expect(true).toBe(true);
   });
 });
-
-// ============================================================================
-// ERROR HANDLING TESTS
-// ============================================================================
 
 describe("onnxruntime-node error handling", () => {
   test("invalid tensor type throws", () => {
