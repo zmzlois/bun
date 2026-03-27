@@ -53,6 +53,24 @@
         "/webkitbuild/.WTF/Headers": "${workspaceFolder}/vendor/WebKit/Source/WTF",
       },
     },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "(lldb) Launch",
+      "program": "${workspaceFolder}/build/debug/bun-debug",
+      "args": ["${file}"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BUN_DEBUG_QUIET_LOGS": "1",
+        "BUN_GARBAGE_COLLECTOR_LEVEL": "1",
+      },
+      "sourceMap": {
+        "/Users/runner/work/_temp/webkit-release/vendor/WebKit": "${workspaceFolder}/vendor/WebKit",
+        "/Users/runner/work/_temp/webkit-release/WTF/Headers": "${workspaceFolder}/vendor/WebKit/Source/WTF",
+        "/webkitbuild/vendor/WebKit": "${workspaceFolder}/vendor/WebKit",
+        "/webkitbuild/.WTF/Headers": "${workspaceFolder}/vendor/WebKit/Source/WTF",
+      },
+    },
     // bun run [file]
     {
       "type": "lldb",

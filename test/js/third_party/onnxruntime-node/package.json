@@ -1,0 +1,8 @@
+{
+  "name": "onnxruntime-node-test",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "onnxruntime-node": "1.22.0"
+  }
+}
